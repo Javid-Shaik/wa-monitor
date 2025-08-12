@@ -10,7 +10,7 @@ dotenv.config();
 let sock;
 
 //  Initialize Firebase Admin SDK
-const serviceAccount = require("./firebase-key.json"); // 🔹 Path to your Firebase service key
+const serviceAccount = require("./firebase/firebase-key.json"); // 🔹 Path to your Firebase service key
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`,
@@ -81,11 +81,11 @@ async function startWhatsAppClient() {
     });
 
     sock.ev.on("presence.update", async (presence) => {
-        if (unsubscribedJids.has(presence.id)) {
-            console.log(`Ignoring presence update for unsubscribed number: ${presence.id}`);
-            return; // Exit the function
-        }
-        console.log(" Presence Update:", JSON.stringify(presence, null, 2));
+        // if (unsubscribedJids.has(presence.id)) {
+        //     console.log(`Ignoring presence update for unsubscribed number: ${presence.id}`);
+        //     return; // Exit the function
+        // }
+        // console.log(" Presence Update:", JSON.stringify(presence, null, 2));
     
         const participant = presence.id.split("@")[0]; // Extract phone number
         const presenceData = presence.presences || {}; // Ensure presences exist
