@@ -1,82 +1,57 @@
-const db = require('../config/database');
+const dailyStatsModel = require('../models/dailyStatsModel');
 
-// Create dailyStats table if it doesn't exist
-function createDailyStatsTable() {
-    return new Promise((resolve, reject) => {
-        db.run(`
-            CREATE TABLE IF NOT EXISTS dailyStats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                trackingId INTEGER NOT NULL,
-                phoneNumber TEXT NOT NULL,
-                date DATE NOT NULL,
-                totalOnlineTime INTEGER DEFAULT 0,
-                loginCount INTEGER DEFAULT 0,
-                FOREIGN KEY (trackingId) REFERENCES trackedNumbers(id)
-            )
-        `, (err) => {
-            if (err) return reject('Error creating dailyStats table');
-            console.error(err);
-            return;
-        });
-        console.log('DailyStats table created');
-        resolve();
-    });
+async function addDailyStatsController(req, res) {
+    const { trackingId, phoneNumber, date, totalOnlineTime, loginCount } = req.body;
+    try {
+        const id = await dailyStatsModel.addDailyStats(trackingId, phoneNumber, date, totalOnlineTime, loginCount);
+        res.status(201).json({ message: 'Daily stats added', id });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 }
 
-// Add daily stats for a tracked number
-function addDailyStats(trackingId, phoneNumber, date, totalOnlineTime = 0, loginCount = 0) {
-    return new Promise((resolve, reject) => {
-        const stmt = db.prepare(`
-            INSERT INTO dailyStats (trackingId, phoneNumber, date, totalOnlineTime, loginCount)
-            VALUES (?, ?, ?, ?, ?)
-        `);
-        stmt.run(trackingId, phoneNumber, date, totalOnlineTime, loginCount, function(err) {
-            if (err) return reject('Error adding daily stats');
-            resolve(this.lastID);  // Return the inserted daily stats' ID
-        });
-    });
+async function getDailyStatsByTrackingIdController(req, res) {
+    const { trackingId } = req.params;
+    try {
+        const stats = await dailyStatsModel.getDailyStatsByTrackingId(trackingId);
+        res.status(200).json(stats);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 }
 
-// Get daily stats by tracking ID
-function getDailyStatsByTrackingId(trackingId) {
-    return new Promise((resolve, reject) => {
-        db.all(`
-            SELECT * FROM dailyStats WHERE trackingId = ?
-        `, [trackingId], (err, rows) => {
-            if (err) return reject('Error retrieving daily stats');
-            resolve(rows);
-        });
-    });
+async function updateDailyStatsController(req, res) {
+    const { id } = req.params;
+    const { totalOnlineTime, loginCount } = req.body;
+    try {
+        const changes = await dailyStatsModel.updateDailyStats(id, totalOnlineTime, loginCount);
+        if (changes) {
+            res.status(200).json({ message: 'Daily stats updated' });
+        } else {
+            res.status(404).json({ error: 'Daily stats not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 }
 
-// Update daily stats (e.g., total online time or login count)
-function updateDailyStats(id, totalOnlineTime, loginCount) {
-    return new Promise((resolve, reject) => {
-        db.run(`
-            UPDATE dailyStats 
-            SET totalOnlineTime = ?, loginCount = ? 
-            WHERE id = ?
-        `, [totalOnlineTime, loginCount, id], function(err) {
-            if (err) return reject('Error updating daily stats');
-            resolve(this.changes);  // Number of updated rows
-        });
-    });
-}
-
-// Delete daily stats by ID
-function deleteDailyStats(id) {
-    return new Promise((resolve, reject) => {
-        db.run(`DELETE FROM dailyStats WHERE id = ?`, [id], function(err) {
-            if (err) return reject('Error deleting daily stats');
-            resolve(this.changes); // Number of deleted rows
-        });
-    });
+async function deleteDailyStatsController(req, res) {
+    const { id } = req.params;
+    try {
+        const changes = await dailyStatsModel.deleteDailyStats(id);
+        if (changes) {
+            res.status(200).json({ message: 'Daily stats deleted' });
+        } else {
+            res.status(404).json({ error: 'Daily stats not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 }
 
 module.exports = {
-    createDailyStatsTable,
-    addDailyStats,
-    getDailyStatsByTrackingId,
-    updateDailyStats,
-    deleteDailyStats
+    addDailyStatsController,
+    getDailyStatsByTrackingIdController,
+    updateDailyStatsController,
+    deleteDailyStatsController
 };
