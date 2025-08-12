@@ -28,3 +28,5 @@ database.sqlite
 
 /auth_info
 /.wwebjs_auth
+
+/firebase
