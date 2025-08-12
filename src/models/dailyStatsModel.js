@@ -1,10 +1,10 @@
 const db = require('../config/database');
 
-function addDailyStats(trackingId, phoneNumber, date, totalOnlineTime = 0, loginCount = 0) {
+function addDailyStats(trackingId, date, totalOnlineTime = 0, loginCount = 0) {
     return new Promise((resolve, reject) => {
         db.run(
-            `INSERT INTO dailyStats (trackingId, phoneNumber, date, totalOnlineTime, loginCount) VALUES (?, ?, ?, ?, ?)`,
-            [trackingId, phoneNumber, date, totalOnlineTime, loginCount],
+            `INSERT INTO dailyStats (trackingId, date, totalOnlineTime, loginCount) VALUES (?, ?, ?, ?)`,
+            [trackingId, date, totalOnlineTime, loginCount],
             function(err) {
                 if (err) return reject(new Error('Error adding daily stats'));
                 resolve(this.lastID);

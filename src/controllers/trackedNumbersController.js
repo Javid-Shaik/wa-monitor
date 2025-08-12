@@ -6,7 +6,7 @@ async function addTrackedNumberController(req, res) {
         return res.status(400).json({ error: 'User ID and phone number are required' });
     }
     try {
-        const id = await trackedNumbersModel.addTrackedNumber(userId, phoneNumber);
+        const id = await trackedNumbersModel.findOrCreateTrackedNumber(userId, phoneNumber);
         res.status(201).json({ message: 'Tracked number added successfully', id });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -24,7 +24,25 @@ async function getTrackedNumbersController(req, res) {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+} 
+
+async function getLastSeen(req, res) {
+    const phoneNumber = req.params.phoneNumber;
+
+    db.get(
+        "SELECT offline_time FROM user_status WHERE phone_number = ? ORDER BY offline_time DESC LIMIT 1",
+        [phoneNumber],
+        (err, row) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+            } else if (!row || !row.offline_time) {
+                res.status(404).json({ message: "No last seen data found" });
+            } else {
+                res.json({ phoneNumber, lastSeen: row.offline_time });
+            }
+        }
+    );
 }
 
-module.exports = { addTrackedNumberController, getTrackedNumbersController };
+module.exports = { addTrackedNumberController, getTrackedNumbersController, getLastSeen};
 

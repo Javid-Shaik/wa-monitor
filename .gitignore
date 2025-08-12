@@ -26,6 +26,7 @@ yarn-error.log*
 
 database.sqlite
 
+/src/auth_info
 /auth_info
 /.wwebjs_auth
 
