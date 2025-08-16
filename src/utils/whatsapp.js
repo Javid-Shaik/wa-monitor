@@ -8,8 +8,6 @@ let sock;
 // Use a Map to store phone numbers with their associated userId and trackingId
 let trackedNumbers = new Map();
 
-
-
 async function startWhatsAppClient() {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
     sock = makeWASocket({

@@ -3,20 +3,23 @@ const db = require('../config/database');
 async function createAllTables() {
     return new Promise((resolve, reject) => {
         db.serialize(() => {
-            // Create the user table
+            // USER TABLE — store auth provider details for Firebase login
             db.run(`
                 CREATE TABLE IF NOT EXISTS user (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT NOT NULL UNIQUE,
-                    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    subscriptionLimit INTEGER DEFAULT 10
+                    firebaseUid TEXT UNIQUE, -- Firebase UID for authentication
+                    email TEXT UNIQUE, -- Optional if phone-only login
+                    phoneNumber TEXT UNIQUE, -- Optional if email-only login
+                    deviceToken TEXT, -- For FCM push notifications
+                    subscriptionLimit INTEGER DEFAULT 10,
+                    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `, (err) => {
-                if (err) return reject(new Error('Error creating user table'));
-                console.log('User table created or already exists.');
+                if (err) return reject(new Error('Error creating user table: ' + err.message));
+                console.log('User table ready.');
             });
 
-            // Create the trackedNumber table with a UNIQUE constraint
+            // TRACKED NUMBER TABLE — unique per user
             db.run(`
                 CREATE TABLE IF NOT EXISTS trackedNumber (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,57 +30,66 @@ async function createAllTables() {
                     UNIQUE (userId, phoneNumber)
                 )
             `, (err) => {
-                if (err) return reject(new Error('Error creating trackedNumber table'));
-                console.log('TrackedNumber table created or already exists.');
+                if (err) return reject(new Error('Error creating trackedNumber table: ' + err.message));
+                console.log('TrackedNumber table ready.');
             });
 
-            // Create the statusLog table
+            // STATUS LOG — store online/offline events
             db.run(`
                 CREATE TABLE IF NOT EXISTS statusLog (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trackingId INTEGER NOT NULL,
-                    onlineTime DATETIME,
+                    onlineTime DATETIME NOT NULL,
                     offlineTime DATETIME,
-                    duration INTEGER,
+                    duration INTEGER, -- Duration in seconds
                     FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE
                 )
             `, (err) => {
-                if (err) return reject(new Error('Error creating statusLog table'));
-                console.log("statusLog table created or already exists.");
+                if (err) return reject(new Error('Error creating statusLog table: ' + err.message));
+                console.log('StatusLog table ready.');
             });
 
-            // Create the dailyStats table
+            // DAILY STATS — pre-aggregated stats for performance
             db.run(`
                 CREATE TABLE IF NOT EXISTS dailyStats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trackingId INTEGER NOT NULL,
                     date DATE NOT NULL,
-                    totalOnlineTime INTEGER DEFAULT 0,
+                    totalOnlineTime INTEGER DEFAULT 0, -- seconds
                     loginCount INTEGER DEFAULT 0,
-                    FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE
+                    FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE,
+                    UNIQUE (trackingId, date)
                 )
             `, (err) => {
-                if (err) return reject(new Error('Error creating dailyStats table'));
-                console.log('DailyStats table created or already exists.');
+                if (err) return reject(new Error('Error creating dailyStats table: ' + err.message));
+                console.log('DailyStats table ready.');
             });
 
-            // Create the notification table
+            // NOTIFICATIONS — store sent notifications
             db.run(`
                 CREATE TABLE IF NOT EXISTS notification (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     userId INTEGER NOT NULL,
                     trackingId INTEGER NOT NULL,
                     phoneNumber TEXT NOT NULL,
-                    status TEXT,
+                    status TEXT, -- "online" / "offline" / etc
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     isRead BOOLEAN DEFAULT 0,
                     FOREIGN KEY (userId) REFERENCES user(id) ON DELETE CASCADE,
                     FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE
                 )
             `, (err) => {
-                if (err) return reject(new Error('Error creating notification table'));
-                console.log('Notification table created or already exists.');
+                if (err) return reject(new Error('Error creating notification table: ' + err.message));
+                console.log('Notification table ready.');
             });
+
+            // INDEXES for performance
+            db.run(`CREATE INDEX IF NOT EXISTS idx_user_email ON user(email)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_user_phone ON user(phoneNumber)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_tracked_userId ON trackedNumber(userId)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_status_trackingId ON statusLog(trackingId)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_dailyStats_trackingId_date ON dailyStats(trackingId, date)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_notification_userId ON notification(userId)`);
 
             resolve();
         });
