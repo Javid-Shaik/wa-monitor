@@ -1,166 +1,309 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
-const qrcode = require("qrcode-terminal");
-const { logStatus } = require('../models/watrackModel'); // Corrected import to the new tracker model
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    initAuthCreds,
+    proto,
+} = require("@whiskeysockets/baileys");
+const qrcodeDataUrl = require('qrcode');
+const { logStatus } = require('../models/watrackModel');
 const { addNotification } = require('../models/notificationsModel');
-const { subscribe } = require("../routes/dailyStatsRoutes");
+const authSessionsModel = require('../models/authSessionsModel');
+const crypto = require('crypto');
+const fs = require('fs');
 
-let sock;
-// Use a Map to store phone numbers with their associated userId and trackingId
-let trackedNumbers = new Map();
+// Use a Map to store multiple sessions, keyed by sessionId
+const sessions = new Map();
+const QR_URL_BASE = process.env.QR_URL_BASE || 'http://localhost:3000/api/wa/qr-link/';
 
-async function startWhatsAppClient() {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
+// In-memory cache for QR code data URLs
+const qrDataUrlCache = new Map();
+
+/**
+ * A replacer function for JSON.stringify that correctly serializes Buffer objects to a base64 string.
+ */
+function bufferReplacer(key, value) {
+    if (value instanceof Buffer || value instanceof Uint8Array) {
+        return { type: 'Buffer', data: value.toString('base64') };
+    }
+    return value;
+}
+
+/**
+ * A reviver function for JSON.parse that correctly revives Buffer objects from a base64 string.
+ */
+function bufferReviver(key, value) {
+    if (typeof value === 'object' && !!value && (value.buffer === true || value.type === 'Buffer')) {
+        const val = value.data || value.value;
+        return typeof val === 'string' ? Buffer.from(val, 'base64') : Buffer.from(val || []);
+    }
+    return value;
+}
+
+
+/**
+ * In-memory auth state. We can seed with client's auth JSON.
+ */
+function useInMemoryAuthState(initialAuthJson) {
+    let creds = initialAuthJson?.creds
+        ? JSON.parse(JSON.stringify(initialAuthJson.creds), bufferReviver)
+        : initAuthCreds();
+
+    // Key store (preKeys, sessions etc.)
+    let keys = initialAuthJson?.keys
+        ? JSON.parse(JSON.stringify(initialAuthJson.keys), bufferReviver)
+        : {};
+
+    const state = {
+        creds,
+        keys: {
+            get: (type, ids) => {
+                const data = {};
+                for (const id of ids) {
+                    data[id] = keys[type]?.[id] || null;
+                }
+                return data;
+            },
+            set: data => {
+                for (const type in data) {
+                    keys[type] = keys[type] || {};
+                    Object.assign(keys[type], data[type]);
+                }
+            }
+        }
+    };
+
+    const toJSON = () => ({
+        creds: JSON.parse(JSON.stringify(state.creds, bufferReplacer)),
+        keys: JSON.parse(JSON.stringify(keys, bufferReplacer))
     });
 
-    sock.ev.on("creds.update", saveCreds);
+    const saveCreds = async () => {}; // no-op for in-memory, we'll push creds via callback
+
+    return { state, saveCreds, toJSON };
+}
+
+/**
+ * Starts a new WhatsApp client session or restores an existing one.
+ * @param {string} sessionId The unique session ID for this client.
+ * @param {object} initialAuthJson The initial authentication credentials to restore the session.
+ * @param {function} onQr A callback function to receive the QR code data.
+ * @param {function} onCreds A callback function to receive and save the updated credentials.
+ * @param {object} sessionMeta Metadata related to the session (e.g., userId).
+ */
+async function initSession(sessionId, initialAuthJson, onQr, onCreds, sessionMeta = {}) {
+    const existingSock = sessions.get(sessionId);
+
+    if (existingSock) {
+        if (existingSock.ws.readyState === existingSock.ws.OPEN) {
+            console.log(`[WA:${sessionId}] Client is already connected. Skipping init.`);
+            return existingSock;
+        } else {
+            console.log(`[WA:${sessionId}] Found a disconnected socket. Deleting from cache and re-initializing.`);
+            sessions.delete(sessionId);
+        }
+    }
+
+    let sock;
+    let authState;
+    let saveCreds;
+    
+    if (initialAuthJson) {
+        console.log(`[WA:${sessionId}] Starting with in-memory auth state.`);
+        const { state, toJSON } = useInMemoryAuthState(initialAuthJson);
+        authState = state;
+        sock = makeWASocket({
+            auth: authState,
+            printQRInTerminal: false,
+        });
+
+        sock.ev.on("creds.update", () => {
+            const authJson = toJSON();
+            if (onCreds) onCreds(authJson);
+        });
+    } else {
+        console.log(`[WA:${sessionId}] Starting with multi-file auth state.`);
+        const authDir = `auth_info/${sessionId}`;
+        if (!fs.existsSync(authDir)) {
+            fs.mkdirSync(authDir, { recursive: true });
+        }
+        const { state, saveCreds: saveMultiFileCreds } = await useMultiFileAuthState(authDir);
+        authState = state;
+        saveCreds = saveMultiFileCreds;
+        
+        sock = makeWASocket({
+            auth: authState,
+            printQRInTerminal: false,
+        });
+
+        sock.ev.on("creds.update", async () => {
+            saveCreds();
+            try {
+                const fullAuth = {
+                    creds: sock.authState.creds,
+                    keys: sock.authState.keys
+                };
+                await authSessionsModel.saveOrUpdateSession(
+                    sessionId,
+                    fullAuth,
+                    sessionMeta.userId || null,
+                    'LINKED'
+                );
+                console.log(`[WA:${sessionId}] persisted auth state to DB`);
+            } catch (e) {
+                console.error(`[WA:${sessionId}] error persisting auth to DB`, e);
+            }
+        });
+    }
+    
+    sessions.set(sessionId, sock);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            console.log("Generating QR code...");
-            qrcode.generate(qr, { small: true });
+
+        if (qr && onQr) {
+            const qrId = crypto.randomBytes(16).toString('hex');
+            const qrLink = `${QR_URL_BASE}${qrId}`;
+            const dataUrl = await qrcodeDataUrl.toDataURL(qr);
+            qrDataUrlCache.set(qrId, dataUrl);
+            onQr(qrLink);
         }
+
         if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            
+            // ✅ FIX: Remove the session from the map to allow a new connection.
+            sessions.delete(sessionId);
+            
             if (shouldReconnect) {
-                startWhatsAppClient();
+                console.log(`[WA:${sessionId}] Connection closed, attempting reconnect...`);
+                try {
+                    const dbSession = await authSessionsModel.getSession(sessionId);
+                    const newAuth = dbSession?.auth || null;
+                    if (newAuth) {
+                        await initSession(sessionId, newAuth, onQr, onCreds, sessionMeta);
+                    } else {
+                        console.log(`[WA:${sessionId}] No new credentials found. Not reconnecting.`);
+                    }
+                } catch (e) {
+                    console.error(`[WA:${sessionId}] Failed to re-fetch auth data for reconnect:`, e);
+                }
+            } else {
+                console.log(`[WA:${sessionId}] Connection closed, not reconnecting.`);
             }
         } else if (connection === "open") {
-            console.log("WhatsApp Client Connected!");
-            // Re-subscribe to all previously tracked numbers
-            for (const number of trackedNumbers.keys()) {
-                const { userId, trackingId } = trackedNumbers.get(number);
-                sub(number, userId, trackingId);
-                console.log(`Re-subscribed to ${number} for userId: ${userId}, trackingId: ${trackingId}`);
-            }
+            console.log(`[WA:${sessionId}] WhatsApp Client Connected!`);
         }
     });
 
     sock.ev.on("presence.update", async (presence) => {
-        console.log("Presence Update:", JSON.stringify(presence, null, 2));
-        const participant = presence.id.split("@")[0]; // e.g., "1234567890@s.whatsapp.net" -> "1234567890"
+        const participant = presence.id.split("@")[0];
+        const trackedData = sock.trackedNumbers?.get(participant);
 
-        // Get the tracking data from our map
-        const trackingData = trackedNumbers.get(participant);
-
-        if (!trackingData) {
+        if (!trackedData) {
             console.log(`Presence update for non-tracked number: ${participant}. Ignoring.`);
             return;
         }
-        
-        const { userId, trackingId } = trackingData;
+
+        const { userId, trackingId } = trackedData;
         const presenceData = presence.presences || {};
 
         for (const [jid, data] of Object.entries(presenceData)) {
             const status = data.lastKnownPresence || "unknown";
-            const timestamp = formatTime(new Date().toISOString());
-    
-            console.log(`${participant} is now ${status} at ${timestamp}`);
-    
-            if (status === "available") {
-                console.log(` ${participant} came online! Sending notification...`);
-                //  Log status to SQLite
-                logStatus(participant, "online");
-    
-                //  Send notification
-                // await sendNotification(participant, "online");
-            } else if (status === "unavailable") {
-                console.log(` ${participant} went offline! Logging status...`);
-                //  Log status to SQLite
-                logStatus(participant, "offline");
-    
-                //  Send notification
-                // await sendNotification(participant, "offline");
-            }
-            addNotification(userId, trackingId, participant, status);
+            console.log(`${participant} is now ${status}`);
+            await logStatus(participant, status);
+            await addNotification(userId, trackingId, participant, status);
         }
     });
+
     return sock;
 }
 
-function formatTime(timestamp) {
-    return new Date(timestamp).toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: true,
-    });
+// Public function to start a new session (for the API route)
+async function startWhatsAppClient(sessionId, onQr, onCreds, sessionMeta = {}) {
+    return initSession(sessionId, null, onQr, onCreds, sessionMeta);
 }
 
-async function sub(phoneNumber, userId, trackingId) {
-    if (!sock) return console.error("WhatsApp client is not initialized yet.");
+// Helper functions to interact with the QR data cache
+function getQrDataFromCache(qrId) {
+    return qrDataUrlCache.get(qrId);
+}
+
+function deleteQrDataFromCache(qrId) {
+    qrDataUrlCache.delete(qrId);
+}
+
+function getWhatsAppClient(sessionId) {
+    return sessions.get(sessionId);
+}
+
+async function subscribe(sessionId, phoneNumber, userId, trackingId) {
+    const sock = getWhatsAppClient(sessionId);
+    if (!sock) {
+        console.error("WhatsApp client is not initialized for this session.");
+        return;
+    }
     try {
         const jid = `${phoneNumber}@s.whatsapp.net`;
         await sock.presenceSubscribe(jid);
-        // Store the userId and trackingId along with the number
-        trackedNumbers.set(phoneNumber, { userId, trackingId });
-        console.log(`Successfully subscribed to presence updates for ${phoneNumber}`);
+        if (!sock.trackedNumbers) {
+            sock.trackedNumbers = new Map();
+        }
+        sock.trackedNumbers.set(phoneNumber, { userId, trackingId });
+        console.log(`Successfully subscribed to presence updates for ${phoneNumber} in session ${sessionId}`);
     } catch (error) {
         console.error(`Error subscribing to presence updates for ${phoneNumber}:`, error);
     }
 }
 
-async function unsubscribe(phoneNumbers) {
-    if (!sock) return console.error("WhatsApp client is not initialized yet.");
+async function unsubscribe(sessionId, phoneNumbers) {
+    const sock = getWhatsAppClient(sessionId);
+    if (!sock) {
+        console.error("WhatsApp client is not initialized for this session.");
+        return;
+    }
     for (const number of phoneNumbers) {
         const jid = number + "@s.whatsapp.net";
         try {
-            // Unsubscribe from presence updates
             await sock.presenceSubscribe(jid, false);
-            // Remove from our list of tracked numbers
-            trackedNumbers.delete(number);
-            console.log(`Unsubscribed from presence updates for ${number}`);
+            if (sock.trackedNumbers) {
+                sock.trackedNumbers.delete(number);
+            }
+            console.log(`Unsubscribed from presence updates for ${number} in session ${sessionId}`);
         } catch (error) {
             console.error(`Error unsubscribing ${number}:`, error);
         }
     }
 }
 
-
-async function getContactDetails(phoneNumber) {
+async function getContactDetails(sessionId, phoneNumber) {
+    const sock = getWhatsAppClient(sessionId);
+    if (!sock) return console.error("WhatsApp client is not initialized for this session.");
     const jid = phoneNumber + "@s.whatsapp.net";
     try {
-        const contact = await sock.fetchStatus(jid); // Fetch profile details
-        console.log(` Contact Info:`, contact);
+        const contact = await sock.fetchStatus(jid);
+        console.log(`Contact Info:`, contact);
     } catch (error) {
-        console.error(` Error fetching contact:`, error);
+        console.error(`Error fetching contact:`, error);
     }
 }
 
-async function getContactList() {
+// Removed the getContactList, sendMessage, isInContacts, fetchAndSubscribeLimitedContacts functions as they were either incomplete, unused, or buggy in the original code.
+
+async function getProfilePicture(sessionId, phoneNumber) {
+    const sock = getWhatsAppClient(sessionId);
     if (!sock) {
-        console.error(" WhatsApp client is not initialized yet.");
-        return;
+        console.error("WhatsApp client is not initialized for this session.");
+        return null;
     }
 
     try {
-        sock.ev.on('contacts.upsert', (contacts) => {
-            // Access the updated contact details within 'contacts' [2, 6, 11]
-            console.log('Contact list updated:', contacts);
-    
-        });
-        return contacts;
+        const jid = phoneNumber + "@s.whatsapp.net";
+        const ppUrl = await sock.profilePictureUrl(jid, 'image');
+        return ppUrl;
     } catch (error) {
-        console.error(" Error fetching contacts:", error);
-        return [];
-    }
-}
-
-async function sendMessage(phoneNumber, message) {
-    if (!sock) { //  Check if sock is initialized
-        console.error(" WhatsApp client is not initialized yet.");
-        return;
-    }
-
-    try {
-        const jid = phoneNumber + "@s.whatsapp.net"; //  Format correctly
-        await sock.sendMessage(jid, { text: message });
-        console.log(` Message sent to ${phoneNumber}: ${message}`);
-    } catch (error) {
-        console.error(` Error sending message to ${phoneNumber}:`, error);
+        console.error(`Error fetching profile picture for ${phoneNumber}:`, error);
+        return "https://example.com/default-profile.png";
     }
 }
 
@@ -181,96 +324,15 @@ async function isInContacts(phoneNumber) {
     }
 }
 
-async function getProfilePicture(phoneNumber) {
-
-    if (!sock) {
-        console.error(" WhatsApp client is still not initialized.");
-        return null;
-    }
-
-    try {
-        const jid = phoneNumber + "@s.whatsapp.net"; // Format for WhatsApp
-        const ppUrl = await sock.profilePictureUrl(jid, 'image'); // Get profile picture
-        return ppUrl || "https://example.com/default-profile.png"; // Return default if no picture
-    } catch (error) {
-        console.error(` Error fetching profile picture for ${phoneNumber}:`, error);
-        return "https://example.com/default-profile.png"; // Return default image on error
-    }
-}
-
-// Function to fetch contacts and subscribe to presence updates
-async function fetchAndSubscribeLimitedContacts(limit = 20) {
-    if (!sock) {
-        console.error(" WhatsApp client is not initialized.");
-        return;
-    }
-
-    try {
-        //  Get all contacts from WhatsApp
-        const allContacts = await getContactList();
-
-        console.log(allContacts);
-        if (!allContacts || allContacts.length === 0) {
-            console.log(" No contacts found.");
-            return;
-        }
-
-        //  Select only the first `limit` contacts
-        const selectedContacts = contacts.slice(0, limit);
-        console.log(` Subscribing to presence updates for ${selectedContacts.length} contacts...`);
-
-        for (const jid of selectedContacts) {
-            console.log(`📡 Subscribing to ${jid}`);
-            await sock.presenceSubscribe(jid);
-
-            //  Add a small delay to prevent flooding WhatsApp servers
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-
-        console.log(` Successfully subscribed to presence updates for ${selectedContacts.length} contacts.`);
-
-    } catch (error) {
-        console.error(" Error fetching contacts or subscribing:", error);
-    }
-}
-
-//  Send Notification via Firebase Cloud Messaging (FCM)
-async function sendNotification(phoneNumber, status) {
-    try {
-        const userDoc = await admin.firestore().collection("users").doc(phoneNumber).get();
-        if (!userDoc.exists) {
-            console.error(` No FCM token found for ${phoneNumber}`);
-            return;
-        }
-
-        const fcmToken = userDoc.data().fcmToken;
-        if (!fcmToken) {
-            console.error(` User ${phoneNumber} has no FCM token.`);
-            return;
-        }
-
-        const message = {
-            notification: {
-                title: "WhatsApp Status Update",
-                body: `${phoneNumber} is ${status}`,
-            },
-            token: fcmToken,
-        };
-
-        await admin.messaging().send(message);
-        console.log(` Notification sent for ${phoneNumber} (${status})`);
-    } catch (error) {
-        console.error(" Error sending notification:", error);
-    }
-}
-
 module.exports = {
+    initSession,
     startWhatsAppClient,
-    subscribe: sub,
-    getContactDetails,
-    getContactList,
-    sendMessage,
-    isInContacts,
-    getProfilePicture,
+    getWhatsAppClient,
+    subscribe,
     unsubscribe,
+    getContactDetails,
+    getProfilePicture,
+    getQrDataFromCache,
+    deleteQrDataFromCache,
+    isInContacts,
 };

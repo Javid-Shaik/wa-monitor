@@ -7,16 +7,33 @@ async function createAllTables() {
             db.run(`
                 CREATE TABLE IF NOT EXISTS user (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    firebaseUid TEXT UNIQUE, -- Firebase UID for authentication
-                    email TEXT UNIQUE, -- Optional if phone-only login
-                    phoneNumber TEXT UNIQUE, -- Optional if email-only login
-                    deviceToken TEXT, -- For FCM push notifications
+                    firebaseUid TEXT UNIQUE,
+                    email TEXT UNIQUE,
+                    phoneNumber TEXT UNIQUE,
+                    deviceToken TEXT,
                     subscriptionLimit INTEGER DEFAULT 10,
                     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `, (err) => {
                 if (err) return reject(new Error('Error creating user table: ' + err.message));
                 console.log('User table ready.');
+            });
+
+            // AUTH_SESSIONS TABLE - for WhatsApp authentication sessions
+            db.run(`
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sessionId TEXT UNIQUE NOT NULL,
+                    userId INTEGER,
+                    auth_blob TEXT,
+                    status TEXT DEFAULT 'PENDING',
+                    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (userId) REFERENCES user(id) ON DELETE SET NULL
+                )
+            `, (err) => {
+                if (err) return reject(new Error('Error creating auth_sessions table: ' + err.message));
+                console.log('Auth_sessions table ready.');
             });
 
             // TRACKED NUMBER TABLE — unique per user
@@ -41,7 +58,7 @@ async function createAllTables() {
                     trackingId INTEGER NOT NULL,
                     onlineTime DATETIME NOT NULL,
                     offlineTime DATETIME,
-                    duration INTEGER, -- Duration in seconds
+                    duration INTEGER,
                     FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE
                 )
             `, (err) => {
@@ -55,7 +72,7 @@ async function createAllTables() {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trackingId INTEGER NOT NULL,
                     date DATE NOT NULL,
-                    totalOnlineTime INTEGER DEFAULT 0, -- seconds
+                    totalOnlineTime INTEGER DEFAULT 0,
                     loginCount INTEGER DEFAULT 0,
                     FOREIGN KEY (trackingId) REFERENCES trackedNumber(id) ON DELETE CASCADE,
                     UNIQUE (trackingId, date)
@@ -72,7 +89,7 @@ async function createAllTables() {
                     userId INTEGER NOT NULL,
                     trackingId INTEGER NOT NULL,
                     phoneNumber TEXT NOT NULL,
-                    status TEXT, -- "online" / "offline" / etc
+                    status TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     isRead BOOLEAN DEFAULT 0,
                     FOREIGN KEY (userId) REFERENCES user(id) ON DELETE CASCADE,
@@ -90,6 +107,9 @@ async function createAllTables() {
             db.run(`CREATE INDEX IF NOT EXISTS idx_status_trackingId ON statusLog(trackingId)`);
             db.run(`CREATE INDEX IF NOT EXISTS idx_dailyStats_trackingId_date ON dailyStats(trackingId, date)`);
             db.run(`CREATE INDEX IF NOT EXISTS idx_notification_userId ON notification(userId)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_sessionId ON auth_sessions(sessionId)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_userId ON auth_sessions(userId)`);
+            db.run(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_status ON auth_sessions(status)`);
 
             resolve();
         });
