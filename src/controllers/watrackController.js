@@ -1,5 +1,6 @@
 const {
     initSession,
+    endSession,
     subscribe,
     unsubscribe,
     getProfilePicture,
@@ -68,6 +69,20 @@ async function startWhatsAppController(req, res) {
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: e.message });
+    }
+}
+
+async function endSessionController(req, res) {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId required' });
+    }
+    try {
+        await endSession(sessionId);
+        res.json({ message: `Session ${sessionId} ended successfully.` });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to end session' });
     }
 }
 
@@ -213,6 +228,7 @@ module.exports = {
     getQrController,
     getStatusController,
     getQrPublicController,
+    endSessionController,
 
     // Tracking Management
     subscribeController,

@@ -237,6 +237,31 @@ function getWhatsAppClient(sessionId) {
     return sessions.get(sessionId);
 }
 
+async function endSession(sessionId) {
+    const sock = getWhatsAppClient(sessionId);
+    if (sock) {
+        // Unsubscribe from all tracked numbers before logging out
+        const trackedNumbers = Array.from(sock.trackedNumbers?.keys() || []);
+        if (trackedNumbers.length > 0) {
+            await unsubscribe(sessionId, trackedNumbers);
+        }
+        
+        await sock.logout();
+        sessions.delete(sessionId);
+        await authSessionsModel.deleteSession(sessionId);
+        
+        // Also remove the multi-file auth folder if it exists
+        const authDir = `auth_info/${sessionId}`;
+        if (fs.existsSync(authDir)) {
+            fs.rmSync(authDir, { recursive: true, force: true });
+        }
+        console.log(`[WA:${sessionId}] Session successfully terminated.`);
+    } else {
+        console.warn(`[WA:${sessionId}] No active session to terminate.`);
+    }
+}
+
+
 async function subscribe(sessionId, phoneNumber, userId, trackingId) {
     const sock = getWhatsAppClient(sessionId);
     if (!sock) {
@@ -327,6 +352,7 @@ async function isInContacts(phoneNumber) {
 module.exports = {
     initSession,
     startWhatsAppClient,
+    endSession,
     getWhatsAppClient,
     subscribe,
     unsubscribe,
