@@ -27,15 +27,6 @@ function updateDeviceToken(firebaseUid, deviceToken) {
   });
 }
 
-function getUserByFirebaseUid(firebaseUid) {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM user WHERE firebaseUid = ?`, [firebaseUid], (err, row) => {
-      if (err) return reject(new Error('Error fetching user: ' + err.message));
-      resolve(row || null);
-    });
-  });
-}
-
 function getUserById(id) {
   return new Promise((resolve, reject) => {
     db.get(`SELECT * FROM user WHERE id = ?`, [id], (err, row) => {
@@ -58,4 +49,19 @@ function updateUserSubscription(userId, newLimit) {
     });
 }
 
-module.exports = { addOrUpdateUser, updateDeviceToken, getUserByFirebaseUid, getUserById , updateUserSubscription };
+// models/userModel.js
+function getUserIdByFirebaseUid(firebaseUid) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT id AS userId FROM user WHERE firebaseUid = ?`,
+      [firebaseUid],
+      (err, row) => {
+        if (err) return reject(new Error('Error fetching user by Firebase UID'));
+        resolve(row ? row.userId : null);
+      }
+    );
+  });
+}
+
+
+module.exports = { addOrUpdateUser, updateDeviceToken, getUserIdByFirebaseUid, getUserById , updateUserSubscription };

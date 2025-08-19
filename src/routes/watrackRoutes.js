@@ -1,21 +1,31 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const ctrl = require('../controllers/watrackController');
+const ctrl = require("../controllers/watrackController");
 
-router.post('/create-session', ctrl.createSessionController);        // create sessionId
-router.post('/start-client', ctrl.startWhatsAppController);         // start/resume client
-router.get('/qr-code/:sessionId', ctrl.getQrController);           // poll for qr
-router.get('/status/:sessionId', ctrl.getStatusController);        // poll for link status
-router.get('/qr-link/:qrId', ctrl.getQrPublicController); // get QR link by ID
-router.post('/end-session', ctrl.endSessionController);
+//  Session management
+router.post("/create-session", ctrl.createSessionController);        // Force create a new session (optional)
+router.post("/ensure-session", ctrl.ensureSessionController);        // Ensure existing or create new (preferred for app)
+router.post("/start-client", ctrl.startWhatsAppController);          // Start/resume WhatsApp client
+router.get("/qr-code/:sessionId", ctrl.getQrController);             // Fetch QR for scanning
+router.get("/status/:sessionId", ctrl.getStatusController);          // Poll for session link status
+router.get("/session-by-user/:firebaseUid", ctrl.getSessionByUserController); // Get latest session for user
 
-router.post('/subscribe', ctrl.subscribeController);
-router.post('/unsubscribe', ctrl.unsubscribeController);
+//  QR public link
+router.get("/qr-link/:qrId", ctrl.getQrPublicController);            // Get QR link by ID (optional)
 
-router.get('/profile-pic/:sessionId/:phoneNumber', ctrl.getProfilePicController);
-router.get('/in-contacts/:sessionId/:phoneNumber', ctrl.checkInContactsController);
+//  Session lifecycle
+router.post("/end-session", ctrl.endSessionController);              // End a session
 
-router.get('/history/:trackingId', ctrl.getHistoryController);
-router.get('/last-seen/:trackingId', ctrl.getLastSeenController);
+//  Subscriptions
+router.post("/subscribe", ctrl.subscribeController);
+router.post("/unsubscribe", ctrl.unsubscribeController);
+
+//  Profile & contacts
+router.get("/profile-pic/:sessionId/:phoneNumber", ctrl.getProfilePicController);
+router.get("/in-contacts/:sessionId/:phoneNumber", ctrl.checkInContactsController);
+
+//  Tracking
+router.get("/history/:trackingId", ctrl.getHistoryController);
+router.get("/last-seen/:trackingId", ctrl.getLastSeenController);
 
 module.exports = router;

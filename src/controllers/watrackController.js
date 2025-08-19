@@ -13,6 +13,7 @@ const trackedNumbersModel = require('../models/trackedNumbersModel');
 const trackerModel = require('../models/watrackModel');
 const authSessionsModel = require('../models/authSessionsModel');
 const crypto = require('crypto');
+const { getUserIdByFirebaseUid } = require('../models/userModel');
 
 // Session Management
 const statusCache = new Map(); // sessionId -> { connected: bool, status: 'PENDING'|'LINKED' }
@@ -23,10 +24,15 @@ function generateSessionId(userId) {
 
 async function createSessionController(req, res) {
     try {
-        const { userId } = req.body; // optional
+        const { firebaseUid } = req.body;
+        if (!firebaseUid) return res.status(400).json({ error: 'firebaseUid is required' });
+
+        const userId = await getUserIdByFirebaseUid(firebaseUid); // <-- await
+        if (!userId) return res.status(404).json({ error: 'user not found' });
+
         const sessionId = generateSessionId(userId);
         await authSessionsModel.saveOrUpdateSession(sessionId, null, userId, 'PENDING');
-        res.json({ sessionId });
+        res.json({ sessionId, status: 'PENDING' });
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: 'Failed to create session' });
@@ -72,6 +78,49 @@ async function startWhatsAppController(req, res) {
     }
 }
 
+async function getSessionByUserController(req, res) {
+    try {
+        const { firebaseUid } = req.params;
+        if (!firebaseUid) return res.status(400).json({ error: 'firebaseUid required' });
+
+        const userId = await getUserIdByFirebaseUid(firebaseUid); // <-- await fixed
+        if (!userId) return res.json(null);
+
+        const latest = await authSessionsModel.getLatestSessionByUserId(userId);
+        if (!latest) return res.json({ status: 'NONE' });
+
+        return res.json({ sessionId: latest.sessionId, status: latest.status });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch user session' });
+    }
+}
+
+async function ensureSessionController(req, res) {
+    try {
+        const { firebaseUid } = req.body;
+        if (!firebaseUid) return res.status(400).json({ error: 'firebaseUid required' });
+
+        const userId = await getUserIdByFirebaseUid(firebaseUid); // <-- await fixed
+        if (!userId) return res.status(404).json({ error: 'user not found' });
+
+        const linked = await authSessionsModel.getLinkedSessionByUserId(userId);
+        if (linked) return res.json({ sessionId: linked.sessionId, status: 'LINKED' });
+
+        let pending = await authSessionsModel.getPendingSessionByUserId(userId);
+        if (pending) return res.json({ sessionId: pending.sessionId, status: 'PENDING' });
+
+        const sessionId = generateSessionId(userId);
+        await authSessionsModel.saveOrUpdateSession(sessionId, null, userId, 'PENDING');
+        return res.json({ sessionId, status: 'PENDING' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to ensure session' });
+    }
+}
+
+
+
 async function endSessionController(req, res) {
     const { sessionId } = req.body;
     if (!sessionId) {
@@ -109,7 +158,7 @@ async function getStatusController(req, res) {
 
     res.json({
         linked: !!dbSession?.auth,
-        status: cache.status || dbSession?.status || 'PENDING'
+        status: dbSession?.status || cache.status || 'PENDING'
     });
 }
 
@@ -128,7 +177,7 @@ async function getQrPublicController(req, res) {
             </div>
         `);
         // Optionally, delete the data from cache after it's been used
-        deleteQrDataFromCache(qrId);
+        // deleteQrDataFromCache(qrId);
     } else {
         res.status(404).send('QR code expired or not found.');
     }
@@ -223,7 +272,9 @@ async function getLastSeenController(req, res) {
 
 module.exports = {
     // Session Management
-    createSessionController,
+    getSessionByUserController,   // GET /session/user/:firebaseUid
+    ensureSessionController,      // POST /session/ensure
+    createSessionController, 
     startWhatsAppController,
     getQrController,
     getStatusController,
