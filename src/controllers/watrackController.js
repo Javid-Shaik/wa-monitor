@@ -189,12 +189,10 @@ async function subscribeController(req, res) {
     if (!sessionId || !userId || !phoneNumber) {
         return res.status(400).json({ error: 'sessionId, userId and phoneNumber are required' });
     }
-
     try {
-        const trackingId = await trackedNumbersModel.findOrCreateTrackedNumber(userId, phoneNumber);
-        await subscribe(sessionId, phoneNumber, userId, trackingId);
+        await subscribe(sessionId, phoneNumber, userId);
         await getContactDetails(sessionId, phoneNumber);
-        res.json({ message: `Tracking started for ${phoneNumber}`, trackingId });
+        res.json({ message: `Tracking started for ${phoneNumber}`});
     } catch (error) {
         console.error("Error during subscription:", error);
         res.status(500).json({ error: "Failed to start tracking" });
@@ -260,15 +258,88 @@ async function getHistoryController(req, res) {
 }
 
 async function getLastSeenController(req, res) {
-    const { trackingId } = req.params;
-    console.log(`Fetching last seen for trackingId: ${trackingId}`);
+    const { phoneNumber } = req.params;
+    console.log(`Fetching last seen for number: ${phoneNumber}`);
     try {
-        const lastSeen = await trackerModel.getLastSeen(trackingId);
+        const lastSeen = await trackerModel.getLastSeen(phoneNumber);
         res.json({ lastSeen });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 }
+
+
+/**
+ * @api {get} /api/user/:firebaseUid/contacts Get Tracked Contacts
+ * @apiDescription Fetches the list of contacts being tracked by a user.
+ * This endpoint should be used by the mobile app to populate the main contact list.
+ * @apiParam {String} firebaseUid The Firebase UID of the authenticated user.
+ */
+async function getTrackedContactsController(req, res) {
+    try {
+        const { firebaseUid } = req.params;
+        if (!firebaseUid) {
+            return res.status(400).json({ error: 'firebaseUid is required' });
+        }
+
+        const userId = await getUserIdByFirebaseUid(firebaseUid);
+        if (!userId) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const contacts = await trackedNumbersModel.getTrackedNumbersByUserId(userId);
+        const contactList = [];
+
+        // Fetch additional details for each contact
+        for (const contact of contacts) {
+            const lastSeenData = await trackerModel.getLastSeen(contact.trackingId);
+            const isOnline = lastSeenData && lastSeenData.status === 'online';
+            const lastSeenTime = lastSeenData ? lastSeenData.timestamp : null;
+            const avatarUrl = await getProfilePicture(contact.sessionId, contact.phoneNumber);
+
+            contactList.push({
+                phoneNumber: contact.phoneNumber,
+                trackingId: contact.trackingId,
+                lastSeen: lastSeenTime,
+                isOnline: isOnline,
+                avatarUrl: avatarUrl || null
+            });
+        }
+
+        res.json(contactList);
+
+    } catch (e) {
+        console.error('Error fetching tracked contacts:', e);
+        res.status(500).json({ error: e.message });
+    }
+}
+
+/**
+ * @api {get} /api/user/:firebaseUid/activity_logs Get User Activity Logs
+ * @apiDescription Fetches a list of recent activity logs for all contacts a user is tracking.
+ * This endpoint should be used to populate the "Recent Activity" list.
+ * @apiParam {String} firebaseUid The Firebase UID of the authenticated user.
+ */
+async function getUserActivityLogsController(req, res) {
+    try {
+        const { firebaseUid } = req.params;
+        if (!firebaseUid) {
+            return res.status(400).json({ error: 'firebaseUid is required' });
+        }
+
+        const userId = await getUserIdByFirebaseUid(firebaseUid);
+        if (!userId) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const activityLogs = await trackerModel.getRecentActivityByUserId(userId);
+        res.json(activityLogs);
+    } catch (e) {
+        console.error('Error fetching user activity logs:', e);
+        res.status(500).json({ error: e.message });
+    }
+}
+
 
 module.exports = {
     // Session Management
@@ -291,5 +362,8 @@ module.exports = {
 
     // Tracking History
     getHistoryController,
-    getLastSeenController
+    getLastSeenController,
+
+    getTrackedContactsController,
+    getUserActivityLogsController
 };

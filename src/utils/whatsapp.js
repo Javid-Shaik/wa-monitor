@@ -9,6 +9,8 @@ const qrcodeDataUrl = require('qrcode');
 const { logStatus } = require('../models/watrackModel');
 const { addNotification } = require('../models/notificationsModel');
 const authSessionsModel = require('../models/authSessionsModel');
+const trackedNumbersModel = require('../models/trackedNumbersModel');
+const userModel = require('../models/userModel');
 const crypto = require('crypto');
 const fs = require('fs');
 
@@ -16,7 +18,7 @@ const fs = require('fs');
 const sessions = new Map();
 const QR_URL_BASE = process.env.QR_URL_BASE || 'http://localhost:3000/api/wa/qr-link/';
 
-// In-memory cache for QR code data URLs
+// In-memory cache for  data URLs
 const qrDataUrlCache = new Map();
 
 /**
@@ -172,7 +174,6 @@ async function initSession(sessionId, initialAuthJson, onQr, onCreds, sessionMet
         if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             
-            // ✅ FIX: Remove the session from the map to allow a new connection.
             sessions.delete(sessionId);
             
             if (shouldReconnect) {
@@ -189,10 +190,45 @@ async function initSession(sessionId, initialAuthJson, onQr, onCreds, sessionMet
                     console.error(`[WA:${sessionId}] Failed to re-fetch auth data for reconnect:`, e);
                 }
             } else {
+                await cleanupSession(sessionId);
                 console.log(`[WA:${sessionId}] Connection closed, not reconnecting.`);
             }
         } else if (connection === "open") {
             console.log(`[WA:${sessionId}] WhatsApp Client Connected!`);
+            try {
+                if (sock.user && sock.user.id) {
+                    const jid = sock.user.id;
+                    const phoneNumber = jid.split("@")[0].split(":")[0]; 
+                    console.log(`[WA:${sessionId}] Logged in as: ${phoneNumber}`);
+
+                    await userModel.updateUserPhoneBySession(sessionId, phoneNumber);
+                    console.log(`[WA:${sessionId}] Phone number saved to DB: ${phoneNumber}`);
+                }
+                try {
+                const dbSession = await authSessionsModel.getSession(sessionId);
+                if (dbSession?.userId) {
+                    const trackedNumbers = await trackedNumbersModel.getTrackedNumbersByUser(dbSession.userId);
+                    sock.trackedNumbers = new Map();
+
+                    for (const tn of trackedNumbers) {
+                        try {
+                            await subscribe(sessionId, tn.phoneNumber, dbSession.userId);
+                            sock.trackedNumbers.set(tn.phoneNumber, {
+                                userId: dbSession.userId,
+                                trackingId: tn.id
+                            });
+                            console.log(`[WA:${sessionId}] Subscribed to ${tn.phoneNumber}`);
+                        } catch (err) {
+                            console.error(`[WA:${sessionId}] Failed subscribing to ${tn.phoneNumber}:`, err.message);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error(`[WA:${sessionId}] Failed restoring subscriptions:`, err);
+            }
+            } catch (err) {
+                console.error(`[WA:${sessionId}] Failed to save phone number:`, err);
+            }
         }
     });
 
@@ -262,14 +298,16 @@ async function endSession(sessionId) {
 }
 
 
-async function subscribe(sessionId, phoneNumber, userId, trackingId) {
+async function subscribe(sessionId, phoneNumber, userId) {
     const sock = getWhatsAppClient(sessionId);
     if (!sock) {
         console.error("WhatsApp client is not initialized for this session.");
         return;
     }
     try {
-        const jid = `${phoneNumber}@s.whatsapp.net`;
+        const trackingId = await trackedNumbersModel.findOrCreateTrackedNumber(userId, phoneNumber);
+        const jidNumber = phoneNumber.startsWith("91") ? phoneNumber : "91" + phoneNumber;
+        const jid = jidNumber + "@s.whatsapp.net";
         await sock.presenceSubscribe(jid);
         if (!sock.trackedNumbers) {
             sock.trackedNumbers = new Map();
@@ -323,7 +361,9 @@ async function getProfilePicture(sessionId, phoneNumber) {
     }
 
     try {
-        const jid = phoneNumber + "@s.whatsapp.net";
+        const jidNumber = phoneNumber.startsWith("91") ? phoneNumber : "91" + phoneNumber;
+        const jid = jidNumber + "@s.whatsapp.net";
+        console.log(`Fetching profile picture for ${jid}`);
         const ppUrl = await sock.profilePictureUrl(jid, 'image');
         return ppUrl;
     } catch (error) {
@@ -348,6 +388,22 @@ async function isInContacts(phoneNumber) {
         return false;
     }
 }
+
+async function cleanupSession(sessionId) {
+    try {
+        await authSessionsModel.deleteSession(sessionId);
+
+        if (fs.existsSync(`auth_info/${sessionId}`)) {
+            fs.rmSync(`auth_info/${sessionId}`, { recursive: true, force: true });
+            console.log(`[WA:${sessionId}] Deleted auth_info folder`);
+        }
+
+        console.log(`[WA:${sessionId}] Session cleaned up from DB & file system`);
+    } catch (err) {
+        console.error(`[WA:${sessionId}] Cleanup error:`, err);
+    }
+}
+
 
 module.exports = {
     initSession,

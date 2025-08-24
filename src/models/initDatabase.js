@@ -8,6 +8,7 @@ async function createAllTables() {
                 CREATE TABLE IF NOT EXISTS user (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     firebaseUid TEXT UNIQUE,
+                    username TEXT,
                     email TEXT UNIQUE,
                     phoneNumber TEXT UNIQUE,
                     deviceToken TEXT,
@@ -27,6 +28,7 @@ async function createAllTables() {
                     userId INTEGER,
                     auth_blob TEXT,
                     status TEXT DEFAULT 'PENDING',
+                    profilePicUrl TEXT,
                     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (userId) REFERENCES user(id) ON DELETE SET NULL
@@ -41,6 +43,8 @@ async function createAllTables() {
                 CREATE TABLE IF NOT EXISTS trackedNumber (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     userId INTEGER NOT NULL,
+                    name Text,
+                    profilePicUrl TEXT,
                     phoneNumber TEXT NOT NULL,
                     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (userId) REFERENCES user(id) ON DELETE CASCADE,

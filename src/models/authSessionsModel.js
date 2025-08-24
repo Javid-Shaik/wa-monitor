@@ -228,14 +228,58 @@ function getAllSessions() {
     });
 }
 
-function deleteSession(sessionId) {
+async function deleteSession(sessionId) {
     return new Promise((resolve, reject) => {
         db.run(`DELETE FROM auth_sessions WHERE sessionId = ?`, [sessionId], function (err) {
             if (err) return reject(err);
+            console.log(`Deleted auth session ${sessionId}, changes: ${this.changes}`);
             resolve(this.changes);
         });
     });
 }
+
+
+async function getSessionByFirebaseUid(firebaseUid) {
+  return new Promise((resolve, reject) => {
+    db.get(`
+      SELECT 
+        u.id as userId,
+        u.firebaseUid,
+        u.email,
+        u.phoneNumber,
+        u.username,
+        s.sessionId,
+        s.status,
+        s.profilePicUrl,
+        s.createdAt as sessionCreatedAt,
+        s.updatedAt as sessionUpdatedAt
+      FROM user u
+      LEFT JOIN auth_sessions s ON s.userId = u.id
+      WHERE u.firebaseUid = ?
+      ORDER BY s.updatedAt DESC
+      LIMIT 1
+    `, [firebaseUid], (err, row) => {
+      if (err) {
+        return reject(new Error("DB error: " + err.message));
+      }
+      resolve(row);
+    });
+  });
+}
+
+function updateSessionProfilePic(sessionId, profilePicUrl) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE auth_sessions SET profilePicUrl = ? WHERE sessionId = ?`,
+      [profilePicUrl, sessionId],
+      function (err) {
+        if (err) return reject(new Error("DB error: " + err.message));
+        resolve();
+      }
+    );
+  });
+}
+
 
 module.exports = {
     saveOrUpdateSession,
@@ -244,5 +288,7 @@ module.exports = {
     getPendingSessionByUserId,
     getLinkedSessionByUserId,
     getAllSessions,
-    deleteSession
+    deleteSession,
+    getSessionByFirebaseUid,
+    updateSessionProfilePic
 };

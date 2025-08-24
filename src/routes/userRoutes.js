@@ -14,4 +14,5 @@ router.post('/notify/test', auth, ctrl.sendTestNotification);
 router.post('/notify/user/:userId', ctrl.sendToUserId);
 router.get('/profile', auth, ctrl.getUser);
 
+
 module.exports = router;

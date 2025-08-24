@@ -1,5 +1,8 @@
 const admin = require('../config/firebase');
 const userModel = require('../models/userModel');
+const { getProfilePicture } = require('../utils/whatsapp');
+const { getSessionByFirebaseUid } = require('../models/authSessionsModel');
+const { getLastSeen } = require('../models/watrackModel');
 
 async function createUser(req, res) {
     const { idToken, deviceToken, subscriptionLimit } = req.body;
@@ -68,56 +71,104 @@ async function updateSubscription(req, res) {
 }
 
 async function refreshToken(req, res) {
-  const { deviceToken } = req.body;
-  if (!deviceToken) return res.status(400).json({ error: 'deviceToken is required' });
+    const { deviceToken } = req.body;
+    if (!deviceToken) return res.status(400).json({ error: 'deviceToken is required' });
 
-  try {
-    const firebaseUid = req.firebase.uid; // from middleware
-    await userModel.updateDeviceToken(firebaseUid, deviceToken);
-    return res.json({ message: 'Device token updated' });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
+    try {
+        const firebaseUid = req.firebase.uid; // from middleware
+        await userModel.updateDeviceToken(firebaseUid, deviceToken);
+        return res.json({ message: 'Device token updated' });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
 }
 
 async function sendTestNotification(req, res) {
-  try {
-    const firebaseUid = req.firebase.uid;
-    const user = await userModel.getUserByFirebaseUid(firebaseUid);
-    if (!user || !user.deviceToken) return res.status(404).json({ error: 'No device token found' });
+    try {
+        const firebaseUid = req.firebase.uid;
+        const user = await userModel.getUserByFirebaseUid(firebaseUid);
+        if (!user || !user.deviceToken) return res.status(404).json({ error: 'No device token found' });
 
-    const message = {
-      token: user.deviceToken,
-      notification: { title: 'Hello from WaTrack 👋', body: 'Your push setup works perfectly!' },
-      data: { screen: 'home' },
-    };
-    const response = await admin.messaging().send(message);
-    return res.json({ message: 'Notification sent', response });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
+        const message = {
+            token: user.deviceToken,
+            notification: { title: 'Hello from WaTrack 👋', body: 'Your push setup works perfectly!' },
+            data: { screen: 'home' },
+        };
+        const response = await admin.messaging().send(message);
+        return res.json({ message: 'Notification sent', response });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
 }
 
 // Optional: admin-only direct send
 async function sendToUserId(req, res) {
-  try {
+    try {
 
-    const { userId } = req.params;
-    const { title, body, data } = req.body;
-    const user = await userModel.getUserById(userId);
-    if (!user || !user.deviceToken) return res.status(404).json({ error: 'User/device not found' });
+        const { userId } = req.params;
+        const { title, body, data } = req.body;
+        const user = await userModel.getUserById(userId);
+        if (!user || !user.deviceToken) return res.status(404).json({ error: 'User/device not found' });
 
-    const message = {
-      token: user.deviceToken,
-      notification: { title: title || 'Message', body: body || '' },
-      data: data || {},
-    };
-    const response = await admin.messaging().send(message);
-    return res.json({ message: 'Sent', response });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
+        const message = {
+            token: user.deviceToken,
+            notification: { title: title || 'Message', body: body || '' },
+            data: data || {},
+        };
+        const response = await admin.messaging().send(message);
+        return res.json({ message: 'Sent', response });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
 }
 
-module.exports = { createUser, getUser, updateSubscription,refreshToken, sendTestNotification, sendToUserId };
+async function getSessionByUserFirebaseId(req, res) {
+    try {
+        const { firebaseUid } = req.params;
+        console.log
+
+        const row = await getSessionByFirebaseUid(firebaseUid);
+
+        if (!row) {
+            return res.status(404).json({ message: "No linked session found" });
+        }
+
+        let profilePicUrl = null;
+        try {
+            console.log("Fetching profile picture for sessionId:", row.sessionId, "phoneNumber:", row.phoneNumber);
+            profilePicUrl = await getProfilePicture(row.sessionId, row.phoneNumber);
+        } catch (err) {
+            console.error("Error fetching profile picture:", err.message);
+            profilePicUrl = "https://example.com/default-profile.png"; // fallback
+        }
+
+        // Transform DB row into Android response
+        const response = {
+            userId: row.userId,
+            sessionId: row.sessionId,
+            phoneNumber: row.phoneNumber,
+            userName: row.username || row.phoneNumber || "Unknown User",
+            profilePicUrl: profilePicUrl,
+            online: row.status === "LINKED" || row.status === "CONNECTED",
+            lastSeen: row.sessionUpdatedAt || getLastSeen(row.trackingId) || null,
+            status: row.status,
+        };
+
+        return res.json(response);
+
+    } catch (error) {
+        console.error("Error in getSessionByUserController:", error.message);
+        return res.status(500).json({ message: "Server error" });
+    }
+}
+
+module.exports = {
+    createUser,
+    getUser,
+    updateSubscription,
+    refreshToken,
+    sendTestNotification,
+    sendToUserId,
+    getSessionByUserFirebaseId
+};
 

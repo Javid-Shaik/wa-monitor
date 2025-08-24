@@ -3,6 +3,6 @@ const router = express.Router();
 const trackedNumbersController = require('../controllers/trackedNumbersController');
 
 router.post('/add', trackedNumbersController.addTrackedNumberController);
-router.get('/:userId', trackedNumbersController.getTrackedNumbersController);
+router.get('/contacts/:firebaseUid', trackedNumbersController.getTrackedNumbersController);
 
 module.exports = router;
